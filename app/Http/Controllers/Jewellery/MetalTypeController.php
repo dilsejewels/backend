@@ -38,7 +38,7 @@ class MetalTypeController extends Controller
             'dmt_tooltip'  => 'nullable|string|max:2',
             'dmt_status'   => 'required|in:0,1',
             'sort_order'   => 'nullable|integer',
-            'color_code'   => 'nullable|string|max:50',
+            'color_code'   => 'nullable|string|max:150',
             'metal_icon'   => 'nullable|string|max:255',
         ], [
             'dmt_name.required'   => 'Name is required.',

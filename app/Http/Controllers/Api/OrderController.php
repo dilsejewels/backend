@@ -7,6 +7,10 @@ use Illuminate\Support\Str;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Http\Request;
 use App\Http\Controllers\Controller;
+use Illuminate\Support\Facades\DB;
+use App\Models\Coupon;
+use Illuminate\Support\Facades\Log;
+
 
 class OrderController extends Controller
 {
@@ -34,9 +38,15 @@ class OrderController extends Controller
             'item_details'   => 'required|json',
             'total_price'    => 'required|numeric',
             'address'        => 'required|json',
+            'billing_address' => 'nullable|json',
             'order_status'   => 'required|string',
             'payment_mode'   => 'required|string',
             'payment_status' => 'required|string',
+            'transaction_id' => 'nullable|string',
+            'razorpay_payment_id' => 'nullable|string',
+            'razorpay_order_id' => 'nullable|string',
+            'paypal_order_id' => 'nullable|string',
+            'payer_email'    => 'nullable|email',
             'is_gift'        => 'nullable|boolean',
             'notes'          => 'nullable|string',
             'coupon_discount' => 'nullable|numeric',
@@ -54,6 +64,39 @@ class OrderController extends Controller
         $validated = $validator->validated();
         $validated['order_id'] = 'ORD-' . Str::uuid();
 
+        // ✅ COUPON VALIDATION (IMPORTANT)
+        if (!empty($validated['coupon_code'])) {
+            $itemDetails = json_decode($validated['item_details'], true);
+            $items = $itemDetails['items'] ?? [];
+            $cartTotalWithoutDiscount = 0;
+
+            foreach ($items as $item) {
+                $quantity = $item['quantity'] ?? $item['itemQuantity'] ?? 1;
+                $price = $item['price'] ?? 0;
+                $cartTotalWithoutDiscount += ($price * $quantity);
+            }
+
+            $couponValidation = Order::validateCoupon($validated['coupon_code'], $cartTotalWithoutDiscount);
+
+            if (!$couponValidation['valid']) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => $couponValidation['message']
+                ], 400);
+            }
+
+            $coupon = $couponValidation['coupon'];
+            $calculatedDiscount = $coupon->calculateDiscount($cartTotalWithoutDiscount);
+
+            if (abs($calculatedDiscount - $validated['coupon_discount']) > 0.01) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Coupon discount mismatch. Please try again.'
+                ], 400);
+            }
+        }
+
+
         // Parse the payload
         $itemDetails = json_decode($validated['item_details'], true);
         $payload = $itemDetails['items'] ?? [];
@@ -62,6 +105,7 @@ class OrderController extends Controller
         $itemsId = [
             'diamond' => [],
             'jewelry' => [],
+            'gift'    => [],
             'build'   => [],
             'combo'   => [],
         ];
@@ -69,6 +113,7 @@ class OrderController extends Controller
         $quantities = [
             'diamond' => 0,
             'jewelry' => 0,
+            'gift'    => 0,
             'build'   => 0,
             'combo'   => 0,
             'total'   => 0
@@ -76,7 +121,7 @@ class OrderController extends Controller
 
         // Process each item in the payload
         foreach ($payload as $item) {
-            $quantity = $item['quantity'] ?? 1; // Default quantity is 1 if not provided
+            $quantity = $item['quantity'] ?? $item['itemQuantity'] ?? 1;
 
             switch ($item['productType'] ?? null) {
                 case 'diamond':
@@ -102,6 +147,19 @@ class OrderController extends Controller
                             'type' => $item['type'] ?? ''
                         ];
                         $quantities['jewelry'] += $quantity;
+                    }
+                    break;
+
+                case 'gift':
+                    if (!empty($item['id'])) {
+                        $itemsId['gift'][] = [
+                            'id' => $item['id'],
+                            'quantity' => $quantity,
+                            'price' => $item['price'] ?? 0,
+                            'title' => $item['name'] ?? '',
+                            'type' => $item['productType'] ?? ''
+                        ];
+                        $quantities['gift'] += $quantity;
                     }
                     break;
 
@@ -154,9 +212,19 @@ class OrderController extends Controller
         $validated['items_id'] = $itemsId;
         $validated['product_type'] = $productType;
 
-        // Save order
+        // If billing address is not provided, use shipping address
+        if (empty($validated['billing_address']) && !empty($validated['address'])) {
+            $validated['billing_address'] = $validated['address'];
+        }
+
         try {
+            // ✅ DB TRANSACTION USE करें
+            DB::beginTransaction();
+
             $order = Order::create($validated);
+
+            // ✅ Order create होने के बाद Model event automatically coupon count increment कर देगा
+            DB::commit();
 
             return response()->json([
                 'status' => 'success',
@@ -165,6 +233,9 @@ class OrderController extends Controller
                 'quantities' => $quantities
             ], 201);
         } catch (\Exception $e) {
+            DB::rollBack();
+            \Log::error("Order creation failed: " . $e->getMessage());
+
             return response()->json([
                 'status' => 'error',
                 'message' => 'Failed to save order',
@@ -190,6 +261,7 @@ class OrderController extends Controller
         $currentQuantities = [
             'diamond' => 0,
             'jewelry' => 0,
+            'gift'    => 0,
             'build' => 0,
             'combo' => 0,
             'total' => 0
@@ -207,9 +279,8 @@ class OrderController extends Controller
             }
         }
 
-        // Agar items_id se total 0 aaya hai, to old method use karen
+        // If items_id se total 0 aaya hai, to old method use karen
         if ($currentQuantities['total'] === 0) {
-            // Parse item_details se quantity calculate karen
             try {
                 $itemDetails = json_decode($order->item_details, true);
                 $items = $itemDetails['items'] ?? [];
@@ -235,6 +306,254 @@ class OrderController extends Controller
         return response()->json($order);
     }
 
+    // Cancel Order Method
+    // public function cancel(Request $request, $id)
+    // {
+    //     $userId = auth()->id();
+    //     if (!$userId) {
+    //         return response()->json(['message' => 'Unauthorized'], 401);
+    //     }
+
+    //     $order = Order::where('user_id', $userId)->where('id', $id)->first();
+
+    //     if (!$order) {
+    //         return response()->json([
+    //             'status' => 'error',
+    //             'message' => 'Order not found'
+    //         ], 404);
+    //     }
+
+    //     // Validate cancellation reason
+    //     $validator = Validator::make($request->all(), [
+    //         'cancellation_reason' => 'required|string|min:10|max:500'
+    //     ]);
+
+    //     if ($validator->fails()) {
+    //         return response()->json([
+    //             'status' => 'error',
+    //             'message' => 'Validation failed',
+    //             'errors' => $validator->errors()
+    //         ], 422);
+    //     }
+
+    //     // Check if order can be cancelled
+    //     if (!$order->canBeCancelled()) {
+    //         return response()->json([
+    //             'status' => 'error',
+    //             'message' => $order->cancellation_message
+    //         ], 400);
+    //     }
+
+    //     try {
+    //         // Cancel the order
+    //         $success = $order->cancel($request->cancellation_reason);
+
+    //         if ($success) {
+    //             // Reload the order with fresh data
+    //             $order->refresh();
+
+    //             $response = [
+    //                 'status' => 'success',
+    //                 'message' => 'Order cancelled successfully',
+    //                 'order' => $order
+    //             ];
+
+    //             // Add refund information for online payments
+    //             if ($order->payment_mode !== 'cod') {
+    //                 $response['refund_processed'] = true;
+    //                 $response['message'] .= '. Refund has been initiated for your payment.';
+    //             }
+
+    //             return response()->json($response);
+    //         } else {
+    //             return response()->json([
+    //                 'status' => 'error',
+    //                 'message' => 'Failed to cancel order'
+    //             ], 500);
+    //         }
+    //     } catch (\Exception $e) {
+    //         \Log::error("Order cancellation failed: " . $e->getMessage());
+    //         return response()->json([
+    //             'status' => 'error',
+    //             'message' => 'Error cancelling order: ' . $e->getMessage()
+    //         ], 500);
+    //     }
+    // }
+    public function cancel(Request $request, $id)
+    {
+        $userId = auth()->id();
+        if (!$userId) {
+            return response()->json(['message' => 'Unauthorized'], 401);
+        }
+
+        $order = Order::where('user_id', $userId)->where('id', $id)->first();
+
+        if (!$order) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Order not found'
+            ], 404);
+        }
+
+        // Validate cancellation reason
+        $validator = Validator::make($request->all(), [
+            'cancellation_reason' => 'required|string|min:10|max:500'
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Validation failed',
+                'errors' => $validator->errors()
+            ], 422);
+        }
+
+        // Check if order can be cancelled
+        if (!$order->canBeCancelled()) {
+            return response()->json([
+                'status' => 'error',
+                'message' => $order->cancellation_message
+            ], 400);
+        }
+
+        try {
+            if (!empty($order->coupon_code)) {
+                $coupon = \App\Models\Coupon::where('code', $order->coupon_code)->first();
+                if ($coupon && $coupon->used_count > 0) {
+                    \DB::transaction(function () use ($coupon) {
+                        $coupon->decrement('used_count');
+                    });
+                }
+            }
+
+            // Cancel the order
+            $success = $order->cancel($request->cancellation_reason);
+
+            if ($success) {
+                // Reload the order with fresh data
+                $order->refresh();
+
+                $response = [
+                    'status' => 'success',
+                    'message' => 'Order cancelled successfully',
+                    'order' => $order
+                ];
+
+                // Add refund information for online payments
+                if ($order->payment_mode !== 'cod') {
+                    $response['refund_processed'] = true;
+                    $response['message'] .= '. Refund has been initiated for your payment.';
+                }
+
+                return response()->json($response);
+            } else {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Failed to cancel order'
+                ], 500);
+            }
+        } catch (\Exception $e) {
+            \Log::error("Order cancellation failed: " . $e->getMessage());
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Error cancelling order: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    // Mark order as delivered (for admin use)
+    public function markDelivered($id)
+    {
+        $userId = auth()->id();
+        if (!$userId) {
+            return response()->json(['message' => 'Unauthorized'], 401);
+        }
+
+        $order = Order::where('user_id', $userId)->where('id', $id)->first();
+
+        if (!$order) {
+            return response()->json(['message' => 'Order not found'], 404);
+        }
+
+        try {
+            $order->markAsDelivered();
+
+            return response()->json([
+                'status' => 'success',
+                'message' => 'Order marked as delivered',
+                'order' => $order
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Error marking order as delivered: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    // Mark order as shipped (for admin use)
+    public function markShipped($id)
+    {
+        $userId = auth()->id();
+        if (!$userId) {
+            return response()->json(['message' => 'Unauthorized'], 401);
+        }
+
+        $order = Order::where('user_id', $userId)->where('id', $id)->first();
+
+        if (!$order) {
+            return response()->json(['message' => 'Order not found'], 404);
+        }
+
+        try {
+            $success = $order->markAsShipped();
+
+            if ($success) {
+                return response()->json([
+                    'status' => 'success',
+                    'message' => 'Order marked as shipped',
+                    'order' => $order
+                ]);
+            } else {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Cannot mark order as shipped. Current status: ' . $order->order_status
+                ], 400);
+            }
+        } catch (\Exception $e) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Error marking order as shipped: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    // Get cancellation eligibility
+    public function getCancellationInfo($id)
+    {
+        $userId = auth()->id();
+        if (!$userId) {
+            return response()->json(['message' => 'Unauthorized'], 401);
+        }
+
+        $order = Order::where('user_id', $userId)->where('id', $id)->first();
+
+        if (!$order) {
+            return response()->json(['message' => 'Order not found'], 404);
+        }
+
+        return response()->json([
+            'status' => 'success',
+            'data' => [
+                'can_be_cancelled' => $order->canBeCancelled(),
+                'cancellation_message' => $order->cancellation_message,
+                'order_status' => $order->order_status,
+                'payment_mode' => $order->payment_mode,
+                'payment_status' => $order->payment_status
+            ]
+        ]);
+    }
+
     // New method to get quantity summary for all orders
     public function getQuantitySummary(Request $request)
     {
@@ -251,6 +570,7 @@ class OrderController extends Controller
             'by_type' => [
                 'diamond' => 0,
                 'jewelry' => 0,
+                'gift' => 0,
                 'build' => 0,
                 'combo' => 0
             ],
@@ -263,7 +583,7 @@ class OrderController extends Controller
             // Count by product type
             if ($order->quantities && is_array($order->quantities)) {
                 foreach ($order->quantities as $type => $qty) {
-                    if (in_array($type, ['diamond', 'jewelry', 'build', 'combo'])) {
+                    if (in_array($type, ['diamond', 'jewelry', 'gift', 'build', 'combo'])) {
                         $summary['by_type'][$type] += $qty;
                     }
                 }

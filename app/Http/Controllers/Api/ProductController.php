@@ -12,6 +12,7 @@ use App\Models\ProductCollection;
 use App\Models\MetalType;
 use App\Models\DiamondShape;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class ProductController extends Controller
 {
@@ -263,6 +264,10 @@ class ProductController extends Controller
             'variations.shape' => function ($query) {
                 $query->select('id', 'name', 'image');
             },
+            'variations.diamondQualityGroup:dqg_id,dqg_name',
+            'diamondCut:id,name',
+            'stone:pst_id,pst_name',
+            'productClarity:id,name',
         ])->where('products_id', $id)->first();
 
         if (!$product) {
@@ -296,6 +301,8 @@ class ProductController extends Controller
                 'sku' => $variation->sku,
                 'shape_id' => $variation->shape_id,
                 'metal_color_id' => $variation->metal_color_id,
+                'diamond_quality_id' =>$variation->diamond_quality_id,
+                'diamond_quality_name' => optional($variation->diamondQualityGroup)->dqg_name,
                 'metal_color' => $variation->metalColor ? [
                     'id' => $variation->metalColor->dmt_id,
                     'name' => $variation->metalColor->dmt_name,
@@ -308,6 +315,7 @@ class ProductController extends Controller
                     'image' => $variation->shape->image ? asset('storage/shapes/' . $variation->shape->image) : null,
                 ] : null,
                 'weight' => $variation->weight,
+                'diamond_weight' => $variation->diamond_weight,
                 'images' => $variation->images,
                 'video' => $variation->video ? asset('storage/variation_videos/' . $variation->video): null,
                 'category' => $category ? [
@@ -372,6 +380,11 @@ class ProductController extends Controller
                 'master_sku' => $product->master_sku,
                 'description' => $product->products_description,
                 'ready_to_ship' => $product->ready_to_ship,
+                'delivery_days' => $product->delivery_days,
+                'product_clarity' => $product->productClarity ? $product->productClarity->name : null,
+                'product_modal' => $product->product_model,
+                'stone_type' => $product->stone ? $product->stone->pst_name : null,
+                'cut' => $product->diamondCut ? $product->diamondCut->name : null,
                 'is_build' => $isBuild,
             ],
             'category' => $category ? [
@@ -439,15 +452,15 @@ class ProductController extends Controller
 
         // Fetch Collection Data
         if (!empty($filters['subcategory']) && !empty($filters['category'])) {
-            $collectionData = ProductCollection::where('product_category_id', $filters['subcategory'])->get();
+            $collectionData = ProductCollection::where('product_category_ids', $filters['subcategory'])->get();
         } elseif (!empty($filters['category'])) {
-            $collectionData = ProductCollection::where('parent_category_id', $filters['category'])->get();
+            $collectionData = ProductCollection::where('parent_category_ids', $filters['category'])->get();
         } else {
             $collectionData = ProductCollection::join(DB::raw('(
                     SELECT MIN(id) as id
                     FROM product_collections
-                    WHERE parent_category_id IS NOT NULL AND product_category_id IS NULL
-                    GROUP BY parent_category_id
+                    WHERE parent_category_ids IS NOT NULL AND product_category_ids IS NULL
+                    GROUP BY parent_category_ids
                 ) as grouped_collection'), 'product_collections.id', '=', 'grouped_collection.id')
                 ->select('product_collections.*')
                 ->get();
@@ -643,124 +656,6 @@ class ProductController extends Controller
             'currentPage' => $page,
             'perPage' => $perPage,
             'totalPages' => ceil($filteredProductIds->count() / $perPage),
-        ]);
-    }
-
-    public function showRegularProductById($id)
-    {
-        $product = Product::with([
-            'productcategory' => function ($query) {
-                $query->select('category_id', 'category_name', 'parent_id')
-                    ->with('parent:category_id,category_name');
-            },
-            'variations.metalColor' => function ($query) {
-                $query->select('dmt_id', 'dmt_name', 'dmt_tooltip', 'color_code');
-            },
-            'variations.shape' => function ($query) {
-                $query->select('id', 'name', 'image');
-            },
-        ])->where('products_id', $id)->first();
-
-        if (!$product) {
-            return response()->json(['message' => 'Product not found'], 404);
-        }
-
-        $isBuild = (int)($product->is_build_product ?? $product->is_build ?? 0);
-        if ($isBuild !== 0) {
-            return response()->json(['message' => 'Product is not a regular type'], 400);
-        }
-
-        $category = $product->productcategory;
-        $parent = $category?->parent;
-        $variations = $product->variations;
-
-        $qualityByMetal = [];
-        foreach ($variations as $v) {
-            $mid = (string)$v->metal_color_id;
-            if (!isset($qualityByMetal[$mid])) {
-                $qualityByMetal[$mid] = optional($v->metalColor)->dmt_tooltip;
-            }
-        }
-
-        $format = function ($variation) use ($category, $parent) {
-            return [
-                'id' => $variation->id,
-                'product_id' => $variation->product_id,
-                'carat' => $variation->carat,
-                'price' => $variation->price,
-                'original_price' => $variation->regular_price,
-                'sku' => $variation->sku,
-                'shape_id' => $variation->shape_id,
-                'metal_color_id' => $variation->metal_color_id,
-                'metal_color' => $variation->metalColor ? [
-                    'id' => $variation->metalColor->dmt_id,
-                    'name' => $variation->metalColor->dmt_name,
-                    'quality' => $variation->metalColor->dmt_tooltip,
-                    'hex' => $variation->metalColor->color_code ?? null,
-                ] : null,
-                'shape' => $variation->shape ? [
-                    'id' => $variation->shape->id,
-                    'name' => $variation->shape->name,
-                    'image' => $variation->shape->image ? asset('storage/shapes/' . $variation->shape->image) : null,
-                ] : null,
-                'weight' => $variation->weight,
-                'images' => $variation->images,
-                'video' => $variation->video ? asset('storage/variation_videos/' . $variation->video): null,
-                'category' => $category ? [
-                    'id' => $category->category_id,
-                    'name' => $category->category_name,
-                    'parent' => $parent ? [
-                        'id' => $parent->category_id,
-                        'name' => $parent->category_name
-                    ] : null
-                ] : null,
-            ];
-        };
-
-        $groupedByMetal = $variations
-            ->groupBy('metal_color_id')
-            ->map(function ($group) use ($format) {
-                return $group->map($format)->values();
-            })
-            ->filter(fn ($group) => $group->isNotEmpty())
-            ->toArray();
-
-        $metalIds = array_keys($groupedByMetal);
-        usort($metalIds, function ($a, $b) use ($qualityByMetal) {
-            $q1 = $qualityByMetal[$a] ?? null;
-            $q2 = $qualityByMetal[$b] ?? null;
-            $n1 = is_numeric($q1);
-            $n2 = is_numeric($q2);
-            if ($n1 && $n2) return ((int)$q1) <=> ((int)$q2);
-            if ($n1) return -1;
-            if ($n2) return 1;
-            return strcmp((string)$q1, (string)$q2);
-        });
-
-        $sorted = [];
-        foreach ($metalIds as $idKey) {
-            $sorted[$idKey] = $groupedByMetal[$idKey];
-        }
-
-        return response()->json([
-            'id' => $product->products_id,
-            'product' => [
-                'id' => $product->products_id,
-                'name' => $product->products_name,
-                'master_sku' => $product->master_sku,
-                'description' => $product->products_description,
-                'ready_to_ship' => $product->ready_to_ship,
-                'is_build' => $isBuild,
-            ],
-            'category' => $category ? [
-                'id' => $category->category_id,
-                'name' => $category->category_name,
-                'parent' => $parent ? [
-                    'id' => $parent->category_id,
-                    'name' => $parent->category_name,
-                ] : null
-            ] : null,
-            'metal_variations' => $sorted,
         ]);
     }
 
@@ -1078,6 +973,295 @@ class ProductController extends Controller
         ]);
     }
 
+    public function collectionData(Request $request, $slug = null)
+    {
+        /* -----------------------------------------------------------
+            1) READ FILTERS
+        ----------------------------------------------------------- */
+        $filters = [
+            'price'           => null,
+            'style'           => $request->input('style'),
+            'ready_to_ship'   => $request->input('ready_to_ship'),
+            'sort'            => $request->input('sort'),
+            'metal_color_id'  => $request->input('metal_color_id'),
+            'category'        => $request->input('category'),
+            'subcategory'     => $request->input('subcategory'),
+            'menucollection'  => $request->input('menucollection'),
+        ];
+
+        $perPage = (int) $request->input('perPage', 20);
+        $page    = (int) $request->input('page', 1);
+
+        /* -----------------------------------------------------------
+            2) HANDLE COLLECTION SLUG
+        ----------------------------------------------------------- */
+        if ($slug) {
+            $slugMap = [
+                'cassatt'                   => 'cassatt',
+                'the-fulton-collection'     => 'flutton',
+                'the-seraphine-collection'  => 'seraphine',
+                'the-windsor-collection'    => 'windsor',
+                'the-bond-collection'       => 'bond',
+                'bouquet'                   => 'bouquet',
+            ];
+
+            if (isset($slugMap[$slug])) {
+
+                $collectionName = strtolower($slugMap[$slug]);
+
+                // Get all IDs where name = Flutton (case-insensitive)
+                $collectionIds = ProductCollection::whereRaw("LOWER(name) = ?", [$collectionName])
+                                ->pluck('id')
+                                ->toArray();
+
+                if (empty($collectionIds)) {
+                    return $this->emptyResponse($perPage, $slug);
+                }
+
+                $filters['menucollection'] = $collectionIds;
+            }
+
+            if ($slug === 'ready-to-ship-diamond-jewelry-gifts') {
+                $filters['ready_to_ship'] = 'true';
+            }
+        }
+
+        /* -----------------------------------------------------------
+            3) CLEAN PRICE
+        ----------------------------------------------------------- */
+        if ($request->has('price') && preg_match('/^(\d+)-(\d+)$/', $request->price)) {
+            $filters['price'] = str_replace(' ', '', $request->price);
+        }
+
+        /* -----------------------------------------------------------
+            4) STYLE DATA
+        ----------------------------------------------------------- */
+        if ($filters['subcategory'] || $filters['category']) {
+
+            $styleData = ProductStyleCategory::where(
+                "psc_category_id",
+                $filters['subcategory'] ?? $filters['category']
+            )->get();
+
+        } else {
+
+            $styleData = ProductStyleCategory::join(DB::raw("
+                (SELECT MIN(psc_id) as psc_id 
+                FROM products_style_category
+                WHERE parent_category_id IS NULL
+                GROUP BY psc_category_id
+                ) grouped
+            "),'products_style_category.psc_id','=','grouped.psc_id')
+            ->select('products_style_category.*')
+            ->get();
+        }
+
+        /* -----------------------------------------------------------
+            5) METAL TYPES SORTED
+        ----------------------------------------------------------- */
+        $metalTypes = MetalType::all()
+            ->sortBy(fn($m) => (int) filter_var($m->dmt_tooltip, FILTER_SANITIZE_NUMBER_INT))
+            ->values();
+
+        /* -----------------------------------------------------------
+            6) BASE PRODUCT QUERY
+        ----------------------------------------------------------- */
+        $productQuery = Product::select('products.products_id')
+            ->join('product_variations', 'products.products_id', '=', 'product_variations.product_id');
+
+        // CATEGORY
+        if ($filters['category']) {
+            $productQuery->where('products.categories_id', $filters['category']);
+        }
+
+        // STYLE
+        if ($filters['style']) {
+            $productQuery->where('products.psc_id', $filters['style']);
+        }
+
+        // COLLECTIONS
+        if (!empty($filters['menucollection'])) {
+            $productQuery->whereIn('products.product_collection_id', $filters['menucollection']);
+        }
+
+        // READY TO SHIP
+        if ($filters['ready_to_ship'] === 'true') {
+            $productQuery->where('products.ready_to_ship', 1);
+        }
+
+        // PRICE
+        if ($filters['price']) {
+            [$min, $max] = explode('-', $filters['price']);
+            $productQuery->whereBetween('product_variations.price', [(int)$min, (int)$max]);
+        }
+
+        // METAL COLOR
+        if ($filters['metal_color_id']) {
+            $productQuery->where('product_variations.metal_color_id', $filters['metal_color_id']);
+        }
+
+        /* -----------------------------------------------------------
+            7) SORTING
+        ----------------------------------------------------------- */
+        $sort = $filters['sort'];
+        $direction = str_contains($sort, 'desc') ? 'desc' : 'asc';
+
+        if (str_contains($sort, 'date')) {
+
+            $productQuery->orderBy('products.created_at', $direction);
+
+            $totalProducts = $productQuery->distinct()->count('products.products_id');
+
+            $productIds = $productQuery->distinct()
+                ->skip(($page - 1) * $perPage)
+                ->take($perPage)
+                ->pluck('products.products_id');
+
+        } else {
+
+            $priceAgg = ($sort === 'price_desc') ? 'MAX' : 'MIN';
+
+            $mainProductIds = $productQuery->pluck('products.products_id');
+
+            $priceQuery = ProductVariation::select(
+                    'product_id',
+                    DB::raw("$priceAgg(price) AS sort_price")
+                )
+                ->whereIn('product_id', $mainProductIds)
+                ->groupBy('product_id');
+
+            $totalProducts = $priceQuery->count();
+
+            $productIds = $priceQuery->orderBy('sort_price', $direction)
+                ->skip(($page - 1) * $perPage)
+                ->take($perPage)
+                ->pluck('product_id');
+        }
+
+        if ($productIds->isEmpty()) {
+            return $this->emptyResponse($perPage, $slug);
+        }
+
+        /* -----------------------------------------------------------
+            8) FETCH FINAL PRODUCTS WITH VARIATIONS
+        ----------------------------------------------------------- */
+        $products = Product::with([
+                'productcategory.parent',
+                'variations.metalColor'
+            ])
+            ->whereIn('products_id', $productIds)
+            ->orderByRaw('FIELD(products_id, ' . implode(',', $productIds->toArray()) . ')')
+            ->get();
+
+        $finalProducts = [];
+
+        foreach ($products as $product) {
+
+            $variations = $product->variations;
+
+            // ---- Metal filter
+            if (!empty($filters['metal_color_id'])) {
+                $variations = $variations->where('metal_color_id', $filters['metal_color_id']);
+            }
+
+            // ---- Price filter
+            if (!empty($filters['price']) && preg_match('/^(\d+)-(\d+)$/', $filters['price'])) {
+                [$min, $max] = explode('-', $filters['price']);
+                $variations = $variations->filter(fn($v) => $v->price >= $min && $v->price <= $max);
+            }
+
+            if ($variations->isEmpty()) continue;
+
+            $category = $product->productcategory;
+            $parent   = $category?->parent;
+
+            // ---- Group by metal
+            $groupedVariations = $variations->groupBy('metal_color_id')->map(function ($group) {
+                return $group->map(function ($v) {
+                    return [
+                        'id'             => $v->id,
+                        'product_id'     => $v->product_id,
+                        'carat'          => $v->carat,
+                        'price'          => $v->price,
+                        'original_price' => $v->regular_price,
+                        'sku'            => $v->sku,
+                        'metal_color_id' => $v->metal_color_id,
+                        'metal_color'    => $v->metalColor ? [
+                            'id'     => $v->metalColor->dmt_id,
+                            'name'   => $v->metalColor->dmt_name,
+                            'quality'=> $v->metalColor->dmt_tooltip,
+                            'hex'    => $v->metalColor->color_code,
+                        ] : null,
+                        'weight'         => $v->weight,
+                        'images'         => $v->images,
+                    ];
+                });
+            })->filter(fn($g) => $g->isNotEmpty());
+
+            // ---- Sort by metal quality
+            $groupedVariations = $groupedVariations->sortBy(function ($group) {
+                $quality = $group->first()['metal_color']['quality'] ?? null;
+                return is_numeric($quality) ? (int)$quality : PHP_INT_MAX;
+            });
+
+            // ---- Final product structure
+            $finalProducts[] = [
+                'id' => $product->products_id,
+                'product' => [
+                    'id' => $product->products_id,
+                    'name' => $product->products_name,
+                    'master_sku' => $product->master_sku,
+                    'description' => $product->products_description,
+                    'ready_to_ship' => $product->ready_to_ship,
+                    'categories_id' => $product->categories_id,
+                    'parent_category_id' => $product->parent_category_id,
+                    'psc_id' => $product->psc_id,
+                    'is_build' => $product->is_build_product,
+                    'product_collection_id' => $product->product_collection_id,
+                ],
+                'category' => $category ? [
+                    'id' => $category->category_id,
+                    'name' => $category->category_name,
+                    'parent' => $parent ? [
+                        'id' => $parent->category_id,
+                        'name' => $parent->category_name
+                    ] : null
+                ] : null,
+                'metal_variations' => $groupedVariations,
+            ];
+        }
+
+        /* -----------------------------------------------------------
+            9) RESPONSE
+        ----------------------------------------------------------- */
+        return response()->json([
+            'slug'          => $slug,
+            'style_data'    => $styleData,
+            'metal_types'   => $metalTypes,
+            'data'          => $finalProducts,
+            'totalProducts' => count($finalProducts),
+            'currentPage'   => $page,
+            'perPage'       => $perPage,
+            'totalPages'    => ceil($totalProducts / $perPage),
+        ]);
+    }
+
+    /* -----------------------------------------------------------
+        EMPTY RESPONSE for collectionData method
+    ----------------------------------------------------------- */
+    private function emptyResponse($perPage, $slug)
+    {
+        return response()->json([
+            'slug'             => $slug,
+            'style_data'       => [],
+            'metal_types'      => [],
+            'data'             => [],
+            'totalProducts'    => 0,
+            'currentPage'      => 1,
+            'perPage'          => $perPage,
+            'totalPages'       => 0,
+        ]);
+    }
 
     public function giftData(Request $request, $slug = null)
     {
@@ -1100,57 +1284,81 @@ class ProductController extends Controller
         if ($slug) {
             switch ($slug) {
                 case 'jewelry-gifts-for-him':
-                    $filters['gender'] = '0'; // or 2, depending on your DB values
+                    $filters['gender'] = '0';
                     break;
+
                 case 'gifts-under-500':
                     $defaultPrice = '0-500';
                     break;
+
                 case 'gifts-under-1000':
                     $defaultPrice = '0-1000';
                     break;
+
                 case 'gifts-under-1500':
                     $defaultPrice = '0-1500';
                     break;
+
                 case 'ready-to-ship-diamond-jewelry-gifts':
                     $filters['ready_to_ship'] = 'true';
                     break;
-                case 'diamond-ring-gifts':
-                    // Lookup category id dynamically
-                    $category = DB::table('categories')
-                        ->whereRaw('LOWER(category_name) = ?', ['rings'])
+
+                // Collections
+                case 'bouquet':
+                case 'toi-et-moi-collection':
+                case 'vine-collection':
+                    $collectionNames = [
+                        'bouquet' => 'Bouquet',
+                        'toi-et-moi-collection' => 'Toi et Moi',
+                        'vine-collection' => 'Vine',
+                    ];
+                    $collection = DB::table('product_collections')
+                        ->whereRaw('LOWER(name) = ?', [strtolower($collectionNames[$slug])])
                         ->first();
-                    
-                    if ($category) {
-                        $filters['category'] = $category->category_id;
+
+                    if (!$collection) {
+                        return response()->json([
+                            'style_data' => [],
+                            'collection_data' => [],
+                            'metal_types' => [],
+                            'data' => [],
+                            'totalProducts' => 0,
+                            'currentPage' => 1,
+                            'perPage' => $perPage,
+                            'totalPages' => 0,
+                        ]);
                     }
+                    $filters['menucollection'] = $collection->id;
                     break;
 
+                // Categories
+                case 'diamond-ring-gifts':
                 case 'necklace-gifts':
-                    $category = DB::table('categories')
-                        ->whereRaw('LOWER(category_name) = ?', ['necklaces'])
-                        ->first();
-                    
-                    if ($category) {
-                        $filters['category'] = $category->category_id;
-                    }
-                    break;
                 case 'earring-gifts':
-                    $category = DB::table('categories')
-                        ->whereRaw('LOWER(category_name) = ?', ['earrings'])
-                        ->first();
-                    
-                    if ($category) {
-                        $filters['category'] = $category->category_id;
-                    }
-                    break;
                 case 'bracelet-gifts':
+                    $categoryNames = [
+                        'diamond-ring-gifts' => 'rings',
+                        'necklace-gifts' => 'necklaces',
+                        'earring-gifts' => 'earrings',
+                        'bracelet-gifts' => 'bracelet',
+                    ];
                     $category = DB::table('categories')
-                        ->whereRaw('LOWER(category_name) = ?', ['bracelet'])
+                        ->whereRaw('LOWER(category_name) = ?', [strtolower($categoryNames[$slug])])
                         ->first();
-                    
-                    if ($category) {
-                        $filters['category'] = $category->category_id;
+
+                    if (!$category) {
+                        return response()->json([
+                            'style_data' => [],
+                            'collection_data' => [],
+                            'metal_types' => [],
+                            'data' => [],
+                            'totalProducts' => 0,
+                            'currentPage' => 1,
+                            'perPage' => $perPage,
+                            'totalPages' => 0,
+                        ]);
                     }
+                    $filters['category'] = $category->category_id;
                     break;
             }
         }
@@ -1186,15 +1394,15 @@ class ProductController extends Controller
         // Collection Data
         // -----------------------------
         if (!empty($filters['subcategory']) && !empty($filters['category'])) {
-            $collectionData = ProductCollection::where('product_category_id', $filters['subcategory'])->get();
+            $collectionData = ProductCollection::where('product_category_ids', $filters['subcategory'])->get();
         } elseif (!empty($filters['category'])) {
-            $collectionData = ProductCollection::where('parent_category_id', $filters['category'])->get();
+            $collectionData = ProductCollection::where('parent_category_ids', $filters['category'])->get();
         } else {
             $collectionData = ProductCollection::join(DB::raw('(
                     SELECT MIN(id) as id
                     FROM product_collections
-                    WHERE parent_category_id IS NOT NULL AND product_category_id IS NULL
-                    GROUP BY parent_category_id
+                    WHERE parent_category_ids IS NOT NULL AND product_category_ids IS NULL
+                    GROUP BY parent_category_ids
                 ) as grouped_collection'), 'product_collections.id', '=', 'grouped_collection.id')
                 ->select('product_collections.*')
                 ->get();
@@ -1219,7 +1427,11 @@ class ProductController extends Controller
         $productQuery = Product::query()
             ->select('products.products_id')
             ->join('product_variations', 'products.products_id', '=', 'product_variations.product_id')
-            ->where('products.is_build_product',$filters['is_build_product']);
+            ->where(function($q) {
+                $q->where('products.is_build_product', '3')
+                ->orWhere('products.is_gift', 1);
+            });
+
 
 
         // Apply gender filter if set
@@ -1500,15 +1712,15 @@ class ProductController extends Controller
         // Collection Data
         // -----------------------------
         if (!empty($filters['subcategory']) && !empty($filters['category'])) {
-            $collectionData = ProductCollection::where('product_category_id', $filters['subcategory'])->get();
+            $collectionData = ProductCollection::where('product_category_ids', $filters['subcategory'])->get();
         } elseif (!empty($filters['category'])) {
-            $collectionData = ProductCollection::where('parent_category_id', $filters['category'])->get();
+            $collectionData = ProductCollection::where('parent_category_ids', $filters['category'])->get();
         } else {
             $collectionData = ProductCollection::join(DB::raw('(
                     SELECT MIN(id) as id
                     FROM product_collections
-                    WHERE parent_category_id IS NOT NULL AND product_category_id IS NULL
-                    GROUP BY parent_category_id
+                    WHERE parent_category_ids IS NOT NULL AND product_category_ids IS NULL
+                    GROUP BY parent_category_ids
                 ) as grouped_collection'), 'product_collections.id', '=', 'grouped_collection.id')
                 ->select('product_collections.*')
                 ->get();
@@ -1533,7 +1745,10 @@ class ProductController extends Controller
         $productQuery = Product::query()
             ->select('products.products_id')
             ->join('product_variations', 'products.products_id', '=', 'product_variations.product_id')
-            ->where('products.is_build_product',  $filters['is_build_product']);
+            ->where(function($q) {
+                $q->where('products.is_build_product', '4')
+                ->orWhere('products.is_sale', 1);
+            });
 
 
         // Apply gender filter if set
@@ -1722,33 +1937,36 @@ class ProductController extends Controller
         ]);
     }
 
+
     public function showProductById($id)
     {
         $product = Product::with([
-            'productcategory' => function ($query) {
-                $query->select('category_id', 'category_name', 'parent_id')
-                    ->with('parent:category_id,category_name');
-            },
-            'variations.metalColor' => function ($query) {
-                $query->select('dmt_id', 'dmt_name', 'dmt_tooltip', 'color_code');
-            },
-            'variations.shape' => function ($query) {
-                $query->select('id', 'name', 'image');
-            },
-        ])->where('products_id', $id)->first();
+            'variations.shape:id,name,image',
+            'variations.metalColor:dmt_id,dmt_name,dmt_tooltip,color_code',
+            'productcategory:category_id,category_name,parent_id',
+            'productcategory.parent:category_id,category_name',
+            'variations.diamondQualityGroup:dqg_id,dqg_name',
+            'diamondCut:id,name',
+            'stone:pst_id,pst_name',
+            'productClarity:id,name',
+        ])
+        ->where('products_id', $id)
+        ->first();
 
         if (!$product) {
             return response()->json(['message' => 'Product not found'], 404);
         }
 
-        // ✅ Keep the is_build flag but don’t block the response
         $isBuild = (int) ($product->is_build_product ?? $product->is_build ?? 0);
 
         $category = $product->productcategory;
-        $parent = $category?->parent;
+        $parentCategory = $category?->parent;
+
         $variations = $product->variations;
 
-        // Collect tooltip/quality per metal
+        /* ---------------------------------------
+        * Collect tooltip / quality per metal
+        ----------------------------------------*/
         $qualityByMetal = [];
         foreach ($variations as $v) {
             $mid = (string) $v->metal_color_id;
@@ -1757,68 +1975,83 @@ class ProductController extends Controller
             }
         }
 
-        // Format variation data
-        $format = function ($variation) use ($category, $parent) {
+        /* ---------------------------------------
+        * Format Variation
+        ----------------------------------------*/
+        $formatVariation = function ($v) use ($category, $parentCategory) {
             return [
-                'id' => $variation->id,
-                'product_id' => $variation->product_id,
-                'carat' => $variation->carat,
-                'price' => $variation->price,
-                'original_price' => $variation->regular_price,
-                'sku' => $variation->sku,
-                'shape_id' => $variation->shape_id,
-                'metal_color_id' => $variation->metal_color_id,
-                'metal_color' => $variation->metalColor ? [
-                    'id' => $variation->metalColor->dmt_id,
-                    'name' => $variation->metalColor->dmt_name,
-                    'quality' => $variation->metalColor->dmt_tooltip,
-                    'hex' => $variation->metalColor->color_code ?? null,
+                'id' => $v->id,
+                'product_id' => $v->product_id,
+                'carat' => $v->carat,
+                'price' => $v->price,
+                'original_price' => $v->regular_price, // FIXED
+                'sku' => $v->sku,
+                'shape_id' => $v->shape_id,
+                'metal_color_id' => $v->metal_color_id,
+                'weight' => $v->weight,
+                'diamond_weight' => $v->diamond_weight,
+                'diamond_quality_id' => $v->diamond_quality_id,
+                'diamond_quality_name' => optional($v->diamondQualityGroup)->dqg_name,
+                'metal_color' => $v->metalColor ? [
+                    'id' => $v->metalColor->dmt_id,
+                    'name' => $v->metalColor->dmt_name,
+                    'quality' => $v->metalColor->dmt_tooltip,
+                    'hex' => $v->metalColor->color_code,
                 ] : null,
-                'shape' => $variation->shape ? [
-                    'id' => $variation->shape->id,
-                    'name' => $variation->shape->name,
-                    'image' => $variation->shape->image ? asset('storage/shapes/' . $variation->shape->image) : null,
+
+                'shape' => $v->shape ? [
+                    'id' => $v->shape->id,
+                    'name' => $v->shape->name,
+                    'image' => $v->shape->image ? asset("storage/shapes/{$v->shape->image}") : null,
                 ] : null,
-                'weight' => $variation->weight,
-                'images' => $variation->images,
-                'video' => $variation->video ? asset('storage/variation_videos/' . $variation->video) : null,
+
+                'images' => $v->images,
+                'video' => $v->video ? asset("storage/variation_videos/{$v->video}") : null,
+
                 'category' => $category ? [
                     'id' => $category->category_id,
                     'name' => $category->category_name,
-                    'parent' => $parent ? [
-                        'id' => $parent->category_id,
-                        'name' => $parent->category_name
-                    ] : null
+                    'parent' => $parentCategory ? [
+                        'id' => $parentCategory->category_id,
+                        'name' => $parentCategory->category_name,
+                    ] : null,
                 ] : null,
             ];
         };
 
-        // Group variations by metal and sort
-        $groupedByMetal = $variations
-            ->groupBy('metal_color_id')
-            ->map(function ($group) use ($format) {
-                return $group->map($format)->values();
-            })
-            ->filter(fn($group) => $group->isNotEmpty())
+        /*---------------------------------------
+        * Group variations by metal and sort
+        ----------------------------------------*/
+        $grouped = $variations->groupBy('metal_color_id')
+            ->map(fn($group) => $group->map($formatVariation)->values())
+            ->filter()
             ->toArray();
 
-        $metalIds = array_keys($groupedByMetal);
+        // Sorting metal groups by tooltip value
+        $metalIds = array_keys($grouped);
+
         usort($metalIds, function ($a, $b) use ($qualityByMetal) {
             $q1 = $qualityByMetal[$a] ?? null;
             $q2 = $qualityByMetal[$b] ?? null;
+
             $n1 = is_numeric($q1);
             $n2 = is_numeric($q2);
+
             if ($n1 && $n2) return ((int) $q1) <=> ((int) $q2);
             if ($n1) return -1;
             if ($n2) return 1;
+
             return strcmp((string) $q1, (string) $q2);
         });
 
-        $sorted = [];
-        foreach ($metalIds as $idKey) {
-            $sorted[$idKey] = $groupedByMetal[$idKey];
+        $sortedMetal = [];
+        foreach ($metalIds as $mId) {
+            $sortedMetal[$mId] = $grouped[$mId];
         }
 
+        /* ---------------------------------------
+        * Final JSON Response
+        ----------------------------------------*/
         return response()->json([
             'id' => $product->products_id,
             'product' => [
@@ -1827,17 +2060,24 @@ class ProductController extends Controller
                 'master_sku' => $product->master_sku,
                 'description' => $product->products_description,
                 'ready_to_ship' => $product->ready_to_ship,
-                'is_build' => $isBuild, // ✅ still included for reference
+                'delivery_days' => $product->delivery_days,
+                'product_clarity' => $product->productClarity->name ?? null,
+                'product_modal' => $product->products_model,
+                'stone_type' => $product->stone->pst_name ?? null,
+                'cut' => $product->diamondCut->name ?? null,
+                'is_build' => $isBuild,
             ],
+
             'category' => $category ? [
                 'id' => $category->category_id,
                 'name' => $category->category_name,
-                'parent' => $parent ? [
-                    'id' => $parent->category_id,
-                    'name' => $parent->category_name,
-                ] : null
+                'parent' => $parentCategory ? [
+                    'id' => $parentCategory->category_id,
+                    'name' => $parentCategory->category_name,
+                ] : null,
             ] : null,
-            'metal_variations' => $sorted,
+
+            'metal_variations' => $sortedMetal,
         ]);
     }
 

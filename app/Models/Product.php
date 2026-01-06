@@ -126,7 +126,7 @@ class Product extends Model
     {
         return [
             self::BUILD_PRODUCT_JEWELRY => 'Jewelry',
-            self::BUILD_PRODUCT_BUILD => 'Build Product',
+            self::BUILD_PRODUCT_BUILD => 'Engagement',
             self::BUILD_PRODUCT_WEDDING => 'Wedding',
             self::BUILD_PRODUCT_GIFTS => 'Gifts',
             self::BUILD_PRODUCT_SALE => 'Sale',
@@ -207,5 +207,37 @@ class Product extends Model
     public function collection()
     {
         return $this->belongsTo(ProductCollection::class, 'product_collection_id');
+    }
+
+    public function diamondCut()
+    {
+        return $this->belongsTo(ProductsCutMaster::class, 'diamond_cut_id', 'id');
+    }
+
+    public function productClarity()
+    {
+        return $this->belongsTo(ProductClarityMaster::class, 'diamond_clarity_id', 'id');
+    }
+
+    public function stone()
+    {
+        return $this->belongsTo(ProductStoneType::class, 'stone_type_id', 'pst_id');
+    }
+
+
+
+    public function vendor()
+    {
+        return $this->belongsTo(DiamondVendor::class, 'vendor_id', 'vendorid');
+    }
+
+    public function metalColor()
+    {
+        return $this->belongsTo(MetalType::class, 'metal_color_id', 'dmt_id');
+    }
+
+    public function diamondQuality()
+    {
+        return $this->belongsTo(DiamondQualityGroup::class, 'diamond_quality_id', 'dqg_id');
     }
 }

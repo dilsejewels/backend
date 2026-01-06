@@ -15,7 +15,7 @@ class DiamondMaster extends Model
     protected $primaryKey = 'diamondid';
     public $timestamps = false;
 
-     // Image URL Accessor
+    // Image URL Accessor
     public function getImageUrlAttribute()
     {
         if ($this->image_link) {
@@ -33,11 +33,12 @@ class DiamondMaster extends Model
         return null;
     }
 
-
     public function vendor()
     {
         return $this->belongsTo(DiamondVendor::class, 'vendor_id');
     }
+
+    // CORRECTED RELATIONSHIPS:
     public function shape()
     {
         return $this->belongsTo(DiamondShape::class, 'shape', 'id');
@@ -45,39 +46,52 @@ class DiamondMaster extends Model
 
     public function color()
     {
-        return $this->belongsTo(DiamondColor::class, 'color');
+        return $this->belongsTo(DiamondColor::class, 'color', 'id');
     }
 
     public function cut()
     {
-        return $this->belongsTo(DiamondCut::class, 'cut');
+        return $this->belongsTo(DiamondCut::class, 'cut', 'id');
     }
 
-    // Define the relationship with the Clarity model
     public function clarity()
     {
-        return $this->belongsTo(DiamondClarityMaster::class, 'clarity');
+        return $this->belongsTo(DiamondClarityMaster::class, 'clarity', 'id');
     }
 
     public function polish()
     {
-        return $this->belongsTo(DiamondPolish::class, 'polish');
+        return $this->belongsTo(DiamondPolish::class, 'polish', 'id');
     }
 
     public function symmetry()
     {
-        return $this->belongsTo(DiamondSymmetry::class, 'symmetry');
+        return $this->belongsTo(DiamondSymmetry::class, 'symmetry', 'id');
     }
 
     public function fluorescence()
     {
-        return $this->belongsTo(DiamondFlourescence::class, 'fluorescence');
+        return $this->belongsTo(DiamondFlourescence::class, 'fluorescence', 'id');
     }
-    // DiamondMaster.php
 
     public function certificateCompany()
     {
         return $this->belongsTo(DiamondLab::class, 'certificate_company', 'dl_id');
+    }
+    // ADD THESE MISSING RELATIONSHIPS:
+    public function culet()
+    {
+        return $this->belongsTo(DiamondCulet::class, 'culet', 'dc_id');
+    }
+
+    public function fancyColorIntensity()
+    {
+        return $this->belongsTo(DiamondFancyColorIntensity::class, 'fancy_color_intensity', 'fci_id');
+    }
+
+    public function fancyColorOvertone()
+    {
+        return $this->belongsTo(DiamondFancyColor::class, 'fancy_color_overtone', 'fco_id');
     }
 
     protected $fillable = [

@@ -31,9 +31,648 @@ use Illuminate\Support\Str;
 use App\Models\ProductCollection;
 use App\Models\ProductStyleCategory;
 use App\Models\ProductStyleGroup;
+use App\Models\DiamondQualityGroup;
+use Illuminate\Support\Facades\Log;
+
+
+use App\Imports\CombinedProductsImport;
+use App\Exports\CombinedProductsExport;
+use App\Exports\ProductsExport;
+use App\Exports\VariationsExport;
+use App\Imports\ProductsImport;
+use App\Imports\VariationsImport;
+use Maatwebsite\Excel\Facades\Excel;
 
 class ProductController extends Controller
 {
+
+    public function exportCombined()
+    {
+        try {
+            $filename = 'products_variations_' . date('Y-m-d_H-i-s') . '.xlsx';
+            return Excel::download(new CombinedProductsExport, $filename);
+        } catch (\Exception $e) {
+            Log::error('Export failed: ' . $e->getMessage());
+            return redirect()->route('product.index')
+                ->with('error', 'Export failed: ' . $e->getMessage());
+        }
+    }
+
+    public function exportProducts()
+    {
+        try {
+            $filename = 'products_' . date('Y-m-d_H-i-s') . '.xlsx';
+            return Excel::download(new ProductsExport, $filename);
+        } catch (\Exception $e) {
+            Log::error('Products export failed: ' . $e->getMessage());
+            return redirect()->route('product.index')
+                ->with('error', 'Products export failed: ' . $e->getMessage());
+        }
+    }
+
+    public function exportVariations()
+    {
+        try {
+            $filename = 'variations_' . date('Y-m-d_H-i-s') . '.xlsx';
+            return Excel::download(new VariationsExport, $filename);
+        } catch (\Exception $e) {
+            Log::error('Variations export failed: ' . $e->getMessage());
+            return redirect()->route('product.index')
+                ->with('error', 'Variations export failed: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Import combined products and variations
+     */
+    public function importCombined(Request $request)
+    {
+        $request->validate([
+            'import_file' => 'required|mimes:xlsx,xls|max:10240'
+        ]);
+
+        try {
+            Log::info('Starting combined import');
+
+            // First, read the file to validate headers and data types
+            $file = $request->file('import_file');
+            $reader = new \PhpOffice\PhpSpreadsheet\Reader\Xlsx();
+            $spreadsheet = $reader->load($file->getPathname());
+            
+            // Check if required sheets exist
+            if (!$spreadsheet->sheetNameExists('Products') || !$spreadsheet->sheetNameExists('Variations')) {
+                return redirect()->route('product.index')
+                    ->with('error', 'Excel file must contain both "Products" and "Variations" sheets');
+            }
+
+            $import = new CombinedProductsImport();
+            Excel::import($import, $request->file('import_file'));
+
+            $summary = $import->getSummary();
+            $errors = $import->getErrors();
+
+            Log::info('Import summary', $summary);
+
+            // Check if any data was imported
+            if ($summary['products'] == 0 && $summary['variations'] == 0) {
+                $errorMessage = "❌ No data was imported. Possible reasons:\n\n";
+                $errorMessage .= "1. ❌ File format is incorrect\n";
+                $errorMessage .= "2. ❌ Required sheets (Products, Variations) are missing\n";
+                $errorMessage .= "3. ❌ All rows contain invalid data\n";
+                $errorMessage .= "4. ❌ Required fields are missing (Product Name is required)\n";
+                $errorMessage .= "5. ❌ Download sample file and check format\n\n";
+
+                if (!empty($errors)) {
+                    $errorMessage .= "📋 Errors (" . count($errors) . "):\n";
+                    foreach ($errors as $index => $error) {
+                        $errorMessage .= ($index + 1) . ". 📄 Sheet: {$error['sheet']}, 📝 Row: {$error['row']}, ❌ Error: {$error['error']}\n";
+                    }
+
+                    // Save errors to session for modal display
+                    session()->flash('import_errors', $errors);
+                }
+
+                return redirect()->route('product.index')
+                    ->with('error', $errorMessage);
+            }
+
+            // Build success message
+            $message = "✅ Import completed successfully!\n";
+            $message .= "📦 Products imported: " . $summary['products'] . "\n";
+            $message .= "🔄 Variations imported: " . $summary['variations'] . "\n";
+
+            if (!empty($errors)) {
+                Log::warning('Import errors', $errors);
+                $message .= "\n⚠️ " . count($errors) . " rows had errors:\n";
+
+                // Store errors in session for modal display
+                session()->flash('import_errors', $errors);
+
+                // Add first few errors to the message
+                $errorCount = min(count($errors), 3);
+                for ($i = 0; $i < $errorCount; $i++) {
+                    $error = $errors[$i];
+                    $message .= ($i + 1) . ". 📄 {$error['sheet']} Sheet, 📝 Row: {$error['row']}, ❌ {$error['error']}\n";
+                }
+
+                if (count($errors) > 3) {
+                    $message .= "📈 ... and " . (count($errors) - 3) . " more errors\n";
+                    $message .= "📊 Click 'Import Errors' button to see all errors";
+                }
+
+                return redirect()->route('product.index')
+                    ->with('warning', $message);
+            }
+
+            return redirect()->route('product.index')
+                ->with('success', $message);
+        } catch (\Maatwebsite\Excel\Validators\ValidationException $e) {
+            // Handle validation errors specifically
+            $failures = $e->failures();
+            $errorMessage = "❌ Validation errors occurred:\n\n";
+
+            foreach ($failures as $failure) {
+                $errorMessage .= "📝 Row: " . $failure->row() . ", ";
+                $errorMessage .= "📋 Column: " . $failure->attribute() . ", ";
+                $errorMessage .= "❌ Error: " . implode(", ", $failure->errors()) . "\n";
+            }
+
+            Log::error('Validation errors during import: ' . $errorMessage);
+
+            return redirect()->route('product.index')
+                ->with('error', $errorMessage);
+        } catch (\Exception $e) {
+            Log::error('Import failed: ' . $e->getMessage(), [
+                'trace' => $e->getTraceAsString()
+            ]);
+
+            $errorMessage = '❌ Error importing file: ' . $e->getMessage();
+            return redirect()->route('product.index')
+                ->with('error', $errorMessage);
+        }
+    }
+
+    public function importProducts(Request $request)
+    {
+        $request->validate([
+            'import_file' => 'required|mimes:xlsx,xls|max:10240'
+        ]);
+
+        try {
+            Log::info('Starting products import');
+
+            $import = new ProductsImport();
+            Excel::import($import, $request->file('import_file'));
+
+            $importedCount = $import->getImportedCount();
+
+            if ($importedCount == 0) {
+                return redirect()->route('product.index')
+                    ->with('error', 'No products were imported. Please check the file format.');
+            }
+
+            return redirect()->route('product.index')
+                ->with('success', "Products imported successfully! Total: {$importedCount}");
+        } catch (\Exception $e) {
+            Log::error('Products import failed: ' . $e->getMessage());
+            return redirect()->route('product.index')
+                ->with('error', 'Error importing products: ' . $e->getMessage());
+        }
+    }
+
+    public function importVariations(Request $request)
+    {
+        $request->validate([
+            'import_file' => 'required|mimes:xlsx,xls|max:10240'
+        ]);
+
+        try {
+            Log::info('Starting variations import');
+
+            $import = new VariationsImport();
+            Excel::import($import, $request->file('import_file'));
+
+            $importedCount = $import->getImportedCount();
+
+            if ($importedCount == 0) {
+                return redirect()->route('product.index')
+                    ->with('error', 'No variations were imported. Please check the file format.');
+            }
+
+            return redirect()->route('product.index')
+                ->with('success', "Variations imported successfully! Total: {$importedCount}");
+        } catch (\Exception $e) {
+            Log::error('Variations import failed: ' . $e->getMessage());
+            return redirect()->route('product.index')
+                ->with('error', 'Error importing variations: ' . $e->getMessage());
+        }
+    }
+
+    public function downloadCombinedSample()
+    {
+        // Create sample data with correct data types
+        $productsSample = [
+            [
+                'products_name' => 'Sample Diamond Ring',
+                'products_description' => 'This is a sample diamond ring product',
+                'products_short_description' => 'Sample diamond ring',
+                'gender' => '0',
+                'bond' => '0',
+                'available' => 'yes',
+                'products_quantity' => 10,
+                'products_model' => 'MODEL-001',
+                'products_weight' => 5.25,
+                'products_status' => 1,
+                'products_slug' => 'sample-diamond-ring',
+                'vendor_name' => 'Sample Vendor',
+                'category_name' => 'Rings',
+                'parent_category_id' => null,
+                'psc_id' => null,
+                'product_collection_id' => null,
+                'product_style_group_id' => null,
+                'country_of_origin' => 1,
+                'products_tax_class_id' => 1,
+                'products_tax' => 10.0,
+                'is_bestseller' => 0,
+                'is_featured' => 0,
+                'ready_to_ship' => 1,
+                'is_collection' => 0,
+                'is_build_product' => 0,
+                'is_sale' => 1,
+                'is_gift' => 0,
+                'diamond_weight_group_id' => 1,
+                'diamond_quality_id' => 1,
+                'diamond_clarity_id' => 1,
+                'diamond_color_id' => 1,
+                'diamond_cut_id' => 1,
+                'center_stone_type_id' => 1,
+                'stone_type_id' => 1,
+                'metal_type_id' => 1,
+                'metal_color_name' => 'White Gold',
+                'metal_weight' => 3.5,
+                'shape_ids' => null,
+                'build_product_type' => 'jewelry',
+                'certified_lab' => 'GIA',
+                'certificate_number' => 'GIA12345',
+                'products_meta_title' => 'Sample Diamond Ring',
+                'products_meta_description' => 'Sample diamond ring description',
+                'products_meta_keyword' => 'diamond, ring, sample',
+                'delivery_days' => 5,
+                'deleted' => 0,
+                'sort_order' => 1,
+                'shop_zone_id' => 1,
+                'date_added' => date('Y-m-d H:i:s'),
+                'date_updated' => date('Y-m-d H:i:s'),
+            ]
+        ];
+
+        $variationsSample = [
+            [
+                'product_id' => 1,
+                'product_name' => 'Sample Diamond Ring',
+                'sku' => 'PRD-001-RO-525',
+                'carat' => 1.5,
+                'price' => 1500.00,
+                'regular_price' => 1800.00,
+                'stock' => 10,
+                'weight' => 5.25,
+                'shape_name' => 'Round',
+                'diamond_weight' => 1.50,
+                'diamond_quality_name' => 'Excellent',
+                'metal_color_name' => 'White Gold',
+                'is_best_selling' => 1,
+                'created_at' => date('Y-m-d H:i:s'),
+                'updated_at' => date('Y-m-d H:i:s'),
+            ]
+        ];
+
+        // Create Excel file
+        $spreadsheet = new \PhpOffice\PhpSpreadsheet\Spreadsheet();
+
+        // Add Products sheet
+        $spreadsheet->setActiveSheetIndex(0);
+        $sheet = $spreadsheet->getActiveSheet();
+        $sheet->setTitle('Products');
+
+        // Add headers for Products sheet
+        $productsHeaders = [
+            'Product ID',
+            'Product Name',
+            'Description',
+            'Short Description',
+            'Gender',
+            'Bond',
+            'Available',
+            'Quantity',
+            'Model',
+            'Weight',
+            'Status',
+            'Slug',
+            'Vendor Name',
+            'Category Name',
+            'Parent Category ID',
+            'Style Category ID',
+            'Collection ID',
+            'Style Group ID',
+            'Country of Origin',
+            'Tax Class ID',
+            'Tax',
+            'Is Bestseller',
+            'Is Featured',
+            'Ready to Ship',
+            'Is Collection',
+            'Is Build Product',
+            'Is Sale',
+            'Is Gift',
+            'Diamond Weight Group ID',
+            'Diamond Quality ID',
+            'Diamond Clarity ID',
+            'Diamond Color ID',
+            'Diamond Cut ID',
+            'Center Stone Type ID',
+            'Stone Type ID',
+            'Metal Type ID',
+            'Metal Color Name',
+            'Metal Weight',
+            'Shape IDs',
+            'Build Product Type',
+            'Certified Lab',
+            'Certificate Number',
+            'Meta Title',
+            'Meta Description',
+            'Meta Keyword',
+            'Delivery Days',
+            'Deleted',
+            'Sort Order',
+            'Shop Zone ID',
+            'Date Added',
+            'Date Updated',
+        ];
+
+        foreach ($productsHeaders as $col => $header) {
+            $sheet->setCellValueByColumnAndRow($col + 1, 1, $header);
+            $sheet->getStyleByColumnAndRow($col + 1, 1)->getFont()->setBold(true);
+        }
+
+        // Add sample data for Products sheet
+        foreach ($productsSample as $row => $data) {
+            $col = 0;
+            foreach ($productsHeaders as $header) {
+                $value = '';
+                switch ($header) {
+                    case 'Product ID':
+                        $value = '';
+                        break;
+                    case 'Product Name':
+                        $value = $data['products_name'];
+                        break;
+                    case 'Description':
+                        $value = $data['products_description'];
+                        break;
+                    case 'Short Description':
+                        $value = $data['products_short_description'];
+                        break;
+                    case 'Gender':
+                        $value = $data['gender'] == '0' ? 'Man' : 'Woman';
+                        break;
+                    case 'Bond':
+                        $value = $data['bond'] == '0' ? 'Metal' : 'Diamond';
+                        break;
+                    case 'Available':
+                        $value = $data['available'];
+                        break;
+                    case 'Quantity':
+                        $value = $data['products_quantity'];
+                        break;
+                    case 'Model':
+                        $value = $data['products_model'];
+                        break;
+                    case 'Weight':
+                        $value = $data['products_weight'];
+                        break;
+                    case 'Status':
+                        $value = $data['products_status'] ? 'Active' : 'Inactive';
+                        break;
+                    case 'Slug':
+                        $value = $data['products_slug'];
+                        break;
+                    case 'Vendor Name':
+                        $value = $data['vendor_name'];
+                        break;
+                    case 'Category Name':
+                        $value = $data['category_name'];
+                        break;
+                    case 'Parent Category ID':
+                        $value = $data['parent_category_id'];
+                        break;
+                    case 'Style Category ID':
+                        $value = $data['psc_id'];
+                        break;
+                    case 'Collection ID':
+                        $value = $data['product_collection_id'];
+                        break;
+                    case 'Style Group ID':
+                        $value = $data['product_style_group_id'];
+                        break;
+                    case 'Country of Origin':
+                        $value = $data['country_of_origin'];
+                        break;
+                    case 'Tax Class ID':
+                        $value = $data['products_tax_class_id'];
+                        break;
+                    case 'Tax':
+                        $value = $data['products_tax'];
+                        break;
+                    case 'Is Bestseller':
+                        $value = $data['is_bestseller'] ? 'Yes' : 'No';
+                        break;
+                    case 'Is Featured':
+                        $value = $data['is_featured'] ? 'Yes' : 'No';
+                        break;
+                    case 'Ready to Ship':
+                        $value = $data['ready_to_ship'] ? 'Yes' : 'No';
+                        break;
+                    case 'Is Collection':
+                        $value = $data['is_collection'] ? 'Yes' : 'No';
+                        break;
+                    case 'Is Build Product':
+                        $value = $data['is_build_product'];
+                        break;
+                    case 'Is Sale':
+                        $value = $data['is_sale'] ? 'Yes' : 'No';
+                        break;
+                    case 'Is Gift':
+                        $value = $data['is_gift'] ? 'Yes' : 'No';
+                        break;
+                    case 'Diamond Weight Group ID':
+                        $value = $data['diamond_weight_group_id'];
+                        break;
+                    case 'Diamond Quality ID':
+                        $value = $data['diamond_quality_id'];
+                        break;
+                    case 'Diamond Clarity ID':
+                        $value = $data['diamond_clarity_id'];
+                        break;
+                    case 'Diamond Color ID':
+                        $value = $data['diamond_color_id'];
+                        break;
+                    case 'Diamond Cut ID':
+                        $value = $data['diamond_cut_id'];
+                        break;
+                    case 'Center Stone Type ID':
+                        $value = $data['center_stone_type_id'];
+                        break;
+                    case 'Stone Type ID':
+                        $value = $data['stone_type_id'];
+                        break;
+                    case 'Metal Type ID':
+                        $value = $data['metal_type_id'];
+                        break;
+                    case 'Metal Color Name':
+                        $value = $data['metal_color_name'];
+                        break;
+                    case 'Metal Weight':
+                        $value = $data['metal_weight'];
+                        break;
+                    case 'Shape IDs':
+                        $value = $data['shape_ids'];
+                        break;
+                    case 'Build Product Type':
+                        $value = $data['build_product_type'];
+                        break;
+                    case 'Certified Lab':
+                        $value = $data['certified_lab'];
+                        break;
+                    case 'Certificate Number':
+                        $value = $data['certificate_number'];
+                        break;
+                    case 'Meta Title':
+                        $value = $data['products_meta_title'];
+                        break;
+                    case 'Meta Description':
+                        $value = $data['products_meta_description'];
+                        break;
+                    case 'Meta Keyword':
+                        $value = $data['products_meta_keyword'];
+                        break;
+                    case 'Delivery Days':
+                        $value = $data['delivery_days'];
+                        break;
+                    case 'Deleted':
+                        $value = $data['deleted'] ? 'Yes' : 'No';
+                        break;
+                    case 'Sort Order':
+                        $value = $data['sort_order'];
+                        break;
+                    case 'Shop Zone ID':
+                        $value = $data['shop_zone_id'];
+                        break;
+                    case 'Date Added':
+                        $value = $data['date_added'];
+                        break;
+                    case 'Date Updated':
+                        $value = $data['date_updated'];
+                        break;
+                }
+                $sheet->setCellValueByColumnAndRow($col + 1, $row + 2, $value);
+                $col++;
+            }
+        }
+
+        // Add Variations sheet
+        $spreadsheet->createSheet();
+        $spreadsheet->setActiveSheetIndex(1);
+        $sheet = $spreadsheet->getActiveSheet();
+        $sheet->setTitle('Variations');
+
+        // Add headers for Variations sheet
+        $variationsHeaders = [
+            'Product ID',
+            'Product Name',
+            'Variation ID',
+            'Variation SKU',
+            'Carat',
+            'Price',
+            'Regular Price',
+            'Stock',
+            'Weight',
+            'Shape Name',
+            'Diamond Weight',
+            'Diamond Quality Name',
+            'Metal Color Name',
+            'Is Best Selling',
+            'Created At',
+            'Updated At',
+        ];
+
+        foreach ($variationsHeaders as $col => $header) {
+            $sheet->setCellValueByColumnAndRow($col + 1, 1, $header);
+            $sheet->getStyleByColumnAndRow($col + 1, 1)->getFont()->setBold(true);
+        }
+
+        // Add sample data for Variations sheet
+        foreach ($variationsSample as $row => $data) {
+            $col = 0;
+            foreach ($variationsHeaders as $header) {
+                $value = '';
+                switch ($header) {
+                    case 'Product ID':
+                        $value = $data['product_id'];
+                        break;
+                    case 'Product Name':
+                        $value = $data['product_name'];
+                        break;
+                    case 'Variation ID':
+                        $value = '';
+                        break;
+                    case 'Variation SKU':
+                        $value = $data['sku'];
+                        break;
+                    case 'Carat':
+                        $value = $data['carat'];
+                        break;
+                    case 'Price':
+                        $value = $data['price'];
+                        break;
+                    case 'Regular Price':
+                        $value = $data['regular_price'];
+                        break;
+                    case 'Stock':
+                        $value = $data['stock'];
+                        break;
+                    case 'Weight':
+                        $value = $data['weight'];
+                        break;
+                    case 'Shape Name':
+                        $value = $data['shape_name'];
+                        break;
+                    case 'Diamond Weight':
+                        $value = $data['diamond_weight'];
+                        break;
+                    case 'Diamond Quality Name':
+                        $value = $data['diamond_quality_name'];
+                        break;
+                    case 'Metal Color Name':
+                        $value = $data['metal_color_name'];
+                        break;
+                    case 'Is Best Selling':
+                        $value = $data['is_best_selling'] ? 'Yes' : 'No';
+                        break;
+                    case 'Created At':
+                        $value = $data['created_at'];
+                        break;
+                    case 'Updated At':
+                        $value = $data['updated_at'];
+                        break;
+                }
+                $sheet->setCellValueByColumnAndRow($col + 1, $row + 2, $value);
+                $col++;
+            }
+        }
+
+        // Set first sheet as active
+        $spreadsheet->setActiveSheetIndex(0);
+
+        // Auto-size columns
+        foreach (range('A', 'Z') as $columnID) {
+            $spreadsheet->getActiveSheet()->getColumnDimension($columnID)->setAutoSize(true);
+        }
+        if ($spreadsheet->getSheetCount() > 1) {
+            $spreadsheet->getSheet(1)->getColumnDimension('A')->setAutoSize(true);
+            $spreadsheet->getSheet(1)->getColumnDimension('B')->setAutoSize(true);
+        }
+
+        // Save file
+        $writer = new \PhpOffice\PhpSpreadsheet\Writer\Xlsx($spreadsheet);
+        $filename = 'combined_import_sample_' . date('Y-m-d') . '.xlsx';
+        $filePath = storage_path('app/public/' . $filename);
+        $writer->save($filePath);
+
+        return response()->download($filePath, $filename)->deleteFileAfterSend(true);
+    }
+
+
+
     public function index(Request $request)
     {
         if ($request->ajax()) {
@@ -283,6 +922,8 @@ class ProductController extends Controller
                 $skusInRequest[] = $sku;
 
                 $product->variations()->create([
+                    'diamond_weight' => $variation['diamond_weight'] ?? 0,
+                    'diamond_quality_id' => $variation['diamond_quality_id'] ?? null,
                     'weight' => $weight,
                     'price' => $variation['price'],
                     'regular_price' => $variation['regular_price'],
@@ -598,7 +1239,7 @@ class ProductController extends Controller
                     // If no new video uploaded, check for existing video
                     if (isset($variation['existing_video']) && !empty($variation['existing_video'])) {
                         $videoName = basename($variation['existing_video']);
-                        
+
                         // Check if user wants to remove the existing video
                         if (isset($variation['remove_video']) && $variation['remove_video'] == '1') {
                             Storage::disk('public')->delete("variation_videos/$videoName");
@@ -613,6 +1254,8 @@ class ProductController extends Controller
                     if ($existingVariation) {
                         $variationData = [
                             'weight' => $variation['weight'],
+                            'diamond_weight' => $variation['diamond_weight'] ?? 0,
+                            'diamond_quality_id' => $variation['diamond_quality_id'] ?? null,
                             'price' => $variation['price'],
                             'regular_price' => $variation['regular_price'],
                             'stock' => $variation['stock'] ?? 0,
@@ -653,6 +1296,8 @@ class ProductController extends Controller
 
                 $variationData = [
                     'weight' => $weight,
+                    'diamond_weight' => $variation['diamond_weight'] ?? 0,
+                    'diamond_quality_id' => $variation['diamond_quality_id'] ?? null,
                     'price' => $variation['price'],
                     'regular_price' => $variation['regular_price'],
                     'sku' => $sku,
@@ -801,6 +1446,32 @@ class ProductController extends Controller
         ]);
     }
 
+    public function getCollectionsByCategory(Request $request)
+    {
+        $request->validate([
+            'category_id' => 'required',
+            'is_parent' => 'required|boolean'
+        ]);
+
+        $categoryId = $request->input('category_id');
+        $isParent = $request->input('is_parent');
+
+        // Get collections based on category type
+        $collections = ProductCollection::all()->filter(function ($collection) use ($categoryId, $isParent) {
+            if ($isParent) {
+                // Check in parent_category_ids JSON array
+                $parentIds = json_decode($collection->parent_category_ids, true) ?? [];
+                return in_array($categoryId, $parentIds);
+            } else {
+                // Check in product_category_ids JSON array  
+                $productIds = json_decode($collection->product_category_ids, true) ?? [];
+                return in_array($categoryId, $productIds);
+            }
+        });
+
+        return response()->json($collections->values());
+    }
+
     public function getStyleGroupsByCollection(Request $request)
     {
         $collectionId = $request->input('collection_id');
@@ -855,6 +1526,7 @@ class ProductController extends Controller
     private function getValidationRules()
     {
         $rules = [
+            'variations.*.diamond_weight' => 'nullable|numeric|min:0',
             'variations'                  => 'required|array|min:1',
             'products_name'               => 'required|string|max:255',
             'products_status'             => 'required|in:0,1',
@@ -982,5 +1654,31 @@ class ProductController extends Controller
             'bond.required' => 'Bond is required when Build Product is Wedding.',
             'bond.in' => 'Bond must be either Metal or Diamond.',
         ];
+    }
+
+    public function share($id)
+    {
+        // Load variation with product relation
+        $variation = ProductVariation::with('product')->findOrFail($id);
+
+        // Get related product info
+        $product = $variation->product;
+        $productName = $product->products_name ?? 'Product';
+        $productDescription = $product->products_short_description ?? $product->products_description ?? 'Check out this product!';
+
+        // Your accessor already returns full image URLs
+        $images = $variation->images ?? [];
+        $firstImage = isset($images[0])
+            ? url('/api' . $images[0]) // 👈 prepend /api
+            : null;
+
+        // dd($firstImage);
+        return view('products.share', [
+            'product' => $product,
+            'variation' => $variation,
+            'productName' => $productName,
+            'productDescription' => $productDescription,
+            'imageUrl' => $firstImage,
+        ]);
     }
 }
